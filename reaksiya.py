@@ -173,9 +173,10 @@ async def show_statistics(message: Message):
         )
         await message.answer(stats_msg)
 
-# Advertisement handler
+
+# 📢 Reklama boshlash
 @dp.message(F.text == "📢 Reklama yuborish")
-async def start_advertisement(message: Message):
+async def start_advertisement(message: Message, state: FSMContext):
     if message.from_user.id in ADMIN_IDS:
         await message.answer(
             "Reklama matnini yuboring. Ushbu reklama:\n"
@@ -184,39 +185,46 @@ async def start_advertisement(message: Message):
             "yuboriladi.",
             reply_markup=types.ForceReply()
         )
-        dp['waiting_for_ad'] = True
+        await state.set_state(Advertisement.waiting_for_text)
 
-# Process advertisement
-@dp.message(F.text & ~F.command)
-async def process_advertisement(message: Message):
-    if message.from_user.id in ADMIN_IDS and dp.get('waiting_for_ad', False):
+
+# 📢 Reklama jarayoni
+@dp.message(Advertisement.waiting_for_text)
+async def process_advertisement(message: Message, state: FSMContext):
+    if message.from_user.id in ADMIN_IDS:
         ad_text = message.text
-        success_channels = 0
-        failed_channels = 0
-        success_users = 0
-        failed_users = 0
-        
-        # Send to channels
-        for channel_id, channel_data in channels_db.items():
-            if channel_data.get('active', True):
-                try:
-                    await bot.send_message(channel_id, f"📢 Reklama:\n\n{ad_text}")
-                    success_channels += 1
-                except Exception as e:
-                    logging.error(f"Kanalga reklama yuborishda xato: {e}")
-                    failed_channels += 1
-                    channels_db[channel_id]['active'] = False
-        
-        # Send to users
-        for user_id in users_db:
+        await state.clear()
+
+        success_channels, failed_channels = 0, 0
+        success_users, failed_users = 0, 0
+
+        # 📨 Kanallarga reklama yuborish
+        async def send_to_channel(channel_id):
+            nonlocal success_channels, failed_channels
+            try:
+                await bot.send_message(channel_id, f"📢 Reklama:\n\n{ad_text}")
+                success_channels += 1
+            except Exception as e:
+                logging.error(f"Kanalga reklama yuborishda xato: {e}")
+                failed_channels += 1
+                channels_db[channel_id]['active'] = False
+
+        await asyncio.gather(*[send_to_channel(channel) for channel in channels_db if channels_db[channel].get('active', True)])
+
+        # 👥 Foydalanuvchilarga reklama yuborish
+        async def send_to_user(user_id):
+            nonlocal success_users, failed_users
             try:
                 await bot.send_message(user_id, f"📢 Reklama:\n\n{ad_text}")
                 success_users += 1
             except Exception as e:
                 logging.error(f"Foydalanuvchiga reklama yuborishda xato: {e}")
                 failed_users += 1
-        
-        # Send report to admin
+                users_db.discard(user_id)  # Noaktiv foydalanuvchini o‘chirish
+
+        await asyncio.gather(*[send_to_user(user) for user in users_db])
+
+        # 📊 Hisobot yuborish
         report = (
             "📊 Reklama natijalari:\n\n"
             f"📢 Kanallarga:\n"
@@ -226,45 +234,45 @@ async def process_advertisement(message: Message):
             f"✅ Muvaffaqiyatli: {success_users}\n"
             f"❌ Xatoliklar: {failed_users}"
         )
-        
-        await message.answer(report)
-        dp['waiting_for_ad'] = False
 
-# Automatic reaction to channel posts
+        await message.answer(report)
+
+
+# 📌 Kanalga post tashlanganida avtomatik reaksiya qo‘yish
 @dp.channel_post()
 async def react_to_channel_post(post: types.Message):
     channel_id = post.chat.id
-    
-    # Update or add channel to database
+
+    # Kanal ma'lumotlarini yangilash yoki qo'shish
     if channel_id not in channels_db:
         channels_db[channel_id] = {
             'channel_id': channel_id,
             'title': post.chat.title,
             'added_date': datetime.now(),
             'active': True,
-            'post_count': 0,
+            'post_count': 1,
             'last_post': datetime.now()
         }
     else:
         channels_db[channel_id]['post_count'] += 1
         channels_db[channel_id]['last_post'] = datetime.now()
-    
-    # Add reaction
+
+    # Reaksiya qo‘shish
     try:
         reaction = choice(STICKER_REACTIONS if post.sticker else POSITIVE_REACTIONS)
         await bot.set_message_reaction(
             chat_id=channel_id,
             message_id=post.message_id,
-            reaction=[ReactionTypeEmoji(type='emoji', emoji=reaction)],
+            reaction=[types.ReactionTypeEmoji(type='emoji', emoji=reaction)],
             is_big=True
         )
-    except TelegramBadRequest as e:
+    except types.TelegramBadRequest as e:
         if "not enough rights" in str(e).lower():
             channels_db[channel_id]['active'] = False
             logging.warning(f"Kanalda reaksiya qo'yish huquqi yo'q: {channel_id}")
     except Exception as e:
         logging.error(f"Reaksiya qo'yishda xato: {e}")
-
+        
 async def main() -> None:
     await dp.start_polling(bot)
 
