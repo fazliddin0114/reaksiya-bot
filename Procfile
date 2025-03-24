@@ -1,1 +1,1 @@
-worker: python reaksiya.py
+worker: python main.py
